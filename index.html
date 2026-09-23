@@ -1,3 +1,11 @@
+```md
+```md
+```md
+```md
+```md
+```md
+```md
+```md
 <!DOCTYPE html>
 <html lang="id" class="dark">
 <head>
@@ -87,8 +95,8 @@
                 <h1 class="text-base font-bold tracking-tight text-white flex items-center gap-1.5">
                     DriveCam <span class="text-xs px-1.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold border border-indigo-500/30">PRO</span>
                 </h1>
-                <p id="targetFolderBadge" class="text-[11px] text-slate-400 truncate max-w-[150px] sm:max-w-[200px]">
-                    📁 <span id="folderBadgeText">DriveCam Uploads</span>
+                <p id="targetFolderBadge" class="text-[11px] text-slate-400 truncate max-w-[150px] sm:max-w-[220px]">
+                    📁 <span id="folderBadgeText">ID: 0AITXq77D5Ut7Uk9PVA</span>
                 </p>
             </div>
         </div>
@@ -207,12 +215,13 @@
                 <input type="text" id="clientIdInput" placeholder="xxxxxx-xxxxxx.apps.googleusercontent.com" class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500">
             </div>
 
-            <!-- Target Folder Name -->
+            <!-- Target Folder ID -->
             <div class="space-y-3">
                 <label class="block text-xs font-semibold text-slate-300">
-                    Nama Folder di Google Drive
+                    ID Folder Google Drive
+                    <span class="text-slate-500 font-normal block text-[11px] mt-0.5">Kode unik dari URL folder Google Drive kamu.</span>
                 </label>
-                <input type="text" id="folderNameInput" placeholder="DriveCam Uploads" value="DriveCam Uploads" class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500">
+                <input type="text" id="folderIdInput" placeholder="0AITXq77D5Ut7Uk9PVA" value="0AITXq77D5Ut7Uk9PVA" class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono text-indigo-300 placeholder-slate-600 focus:outline-none focus:border-indigo-500">
             </div>
 
             <!-- Image Quality & Resize Controls -->
@@ -324,13 +333,13 @@
         // Global Application State
         const state = {
             clientId: localStorage.getItem('dc_client_id') || '',
-            folderName: localStorage.getItem('dc_folder_name') || 'DriveCam Uploads',
+            folderId: localStorage.getItem('dc_folder_id') || '0AITXq77D5Ut7Uk9PVA',
             quality: parseFloat(localStorage.getItem('dc_quality') || '0.8'),
             maxRes: parseInt(localStorage.getItem('dc_max_res') || '1920'),
             autoUpload: localStorage.getItem('dc_auto_upload') !== 'false',
             
             accessToken: null,
-            targetFolderId: null,
+            targetFolderId: localStorage.getItem('dc_folder_id') || '0AITXq77D5Ut7Uk9PVA',
             tokenClient: null,
             
             stream: null,
@@ -354,7 +363,7 @@
             autoUploadText: document.getElementById('autoUploadText'),
             folderBadgeText: document.getElementById('folderBadgeText'),
             clientIdInput: document.getElementById('clientIdInput'),
-            folderNameInput: document.getElementById('folderNameInput'),
+            folderIdInput: document.getElementById('folderIdInput'),
             qualitySlider: document.getElementById('qualitySlider'),
             maxResSelect: document.getElementById('maxResolutionSelect'),
             previewImage: document.getElementById('previewImage'),
@@ -443,7 +452,6 @@
                         state.accessToken = response.access_token;
                         updateAuthStatusUI(true);
                         showToast("Terhubung ke Google Drive!", "success");
-                        ensureDriveFolder();
                     },
                 });
             } catch (err) {
@@ -462,7 +470,6 @@
             if (state.accessToken) {
                 // Logout / Reset Token
                 state.accessToken = null;
-                state.targetFolderId = null;
                 updateAuthStatusUI(false);
                 showToast("Koneksi Google Drive terputus.", "info");
             } else {
@@ -483,43 +490,6 @@
             } else {
                 elements.authBtnText.innerText = "Hubungkan";
                 elements.authBtn.className = "flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border transition-all duration-200 bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700";
-            }
-        }
-
-        // Ensure Target Upload Folder Exists in Drive
-        async function ensureDriveFolder() {
-            if (!state.accessToken) return;
-
-            try {
-                // Search if folder exists
-                const q = encodeURIComponent(`mimeType='application/vnd.google-apps.folder' and name='${state.folderName}' and trashed=false`);
-                const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}`, {
-                    headers: { 'Authorization': `Bearer ${state.accessToken}` }
-                });
-
-                if (!res.ok) throw new Error("Gagal memeriksa folder di Drive");
-                const data = await res.json();
-
-                if (data.files && data.files.length > 0) {
-                    state.targetFolderId = data.files[0].id;
-                } else {
-                    // Create new folder
-                    const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${state.accessToken}`,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            name: state.folderName,
-                            mimeType: 'application/vnd.google-apps.folder'
-                        })
-                    });
-                    const newFolder = await createRes.json();
-                    state.targetFolderId = newFolder.id;
-                }
-            } catch (err) {
-                console.error("Folder check error:", err);
             }
         }
 
@@ -648,13 +618,9 @@
         // Upload Blob to Google Drive using Multipart Form Data
         async function processUpload(blob) {
             if (!state.accessToken) {
-                showToast("Koneksikan akun Google Drive di bagian atas terlebih dahulu!", "warning");
+                showToast("Koneksikan akun Google Drive terlebih dahulu!", "warning");
                 handleAuthClick();
                 return;
-            }
-
-            if (!state.targetFolderId) {
-                await ensureDriveFolder();
             }
 
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -665,10 +631,12 @@
             elements.progressFill.style.width = '0%';
             elements.progressPercent.innerText = '0%';
 
+            const targetFolder = state.folderId || '0AITXq77D5Ut7Uk9PVA';
+
             const metadata = {
                 name: fileName,
                 mimeType: 'image/jpeg',
-                parents: state.targetFolderId ? [state.targetFolderId] : []
+                parents: [targetFolder]
             };
 
             const formData = new FormData();
@@ -773,21 +741,22 @@
         // Save Modal Settings
         function saveSettings() {
             const newClientId = elements.clientIdInput.value.trim();
-            const newFolderName = elements.folderNameInput.value.trim() || 'DriveCam Uploads';
+            const newFolderId = elements.folderIdInput.value.trim() || '0AITXq77D5Ut7Uk9PVA';
             const newQuality = parseFloat(elements.qualitySlider.value) / 100;
             const newMaxRes = parseInt(elements.maxResSelect.value);
 
             state.clientId = newClientId;
-            state.folderName = newFolderName;
+            state.folderId = newFolderId;
+            state.targetFolderId = newFolderId;
             state.quality = newQuality;
             state.maxRes = newMaxRes;
 
             localStorage.setItem('dc_client_id', newClientId);
-            localStorage.setItem('dc_folder_name', newFolderName);
+            localStorage.setItem('dc_folder_id', newFolderId);
             localStorage.setItem('dc_quality', newQuality);
             localStorage.setItem('dc_max_res', newMaxRes);
 
-            elements.folderBadgeText.innerText = newFolderName;
+            elements.folderBadgeText.innerText = "ID: " + newFolderId;
 
             initGoogleIdentity();
             closeModal('settingsModal');
@@ -796,8 +765,8 @@
 
         function loadSavedSettingsUI() {
             elements.clientIdInput.value = state.clientId;
-            elements.folderNameInput.value = state.folderName;
-            elements.folderBadgeText.innerText = state.folderName;
+            elements.folderIdInput.value = state.folderId;
+            elements.folderBadgeText.innerText = "ID: " + state.folderId;
             elements.qualitySlider.value = Math.round(state.quality * 100);
             document.getElementById('qualityVal').innerText = Math.round(state.quality * 100) + '%';
             elements.maxResSelect.value = state.maxRes;
@@ -839,4 +808,4 @@
         }
     </script>
 </body>
-</html>
+</html>````````````````````````
