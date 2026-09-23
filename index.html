@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DriveCam Snap - Auto Upload to Google Drive</title>
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eef2ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Google Identity Services (OAuth 2.0) -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+            user-select: none;
+            -webkit-user-select: none;
+            overscroll-behavior-y: contain;
+        }
+
+        /* Camera mirror effect when using user-facing camera */
+        .mirror {
+            transform: scaleX(-1);
+        }
+
+        /* Flash animation effect */
+        @keyframes flashAnim {
+            0% { opacity: 1; }
+            100% { opacity: 0; }
+        }
+        .flash-overlay {
+            animation: flashAnim 0.3s ease-out forwards;
+        }
+
+        /* Shutter button pulsing glow */
+        .shutter-btn-glow {
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.5);
+        }
+
+        /* Custom scrollbar for drawer */
+        ::-webkit-scrollbar {
+            width: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.6);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body class="h-screen w-screen overflow-hidden flex flex-col justify-between relative bg-slate-950">
+
+    <!-- Top Navigation Header -->
+    <header class="z-20 px-4 py-3 flex items-center justify-between bg-slate-900/80 backdrop-blur-md border-b border-slate-800">
+        <div class="flex items-center gap-2.5">
+            <div class="p-2 bg-indigo-600/20 text-indigo-400 rounded-xl border border-indigo-500/30">
+                <i data-lucide="camera" class="w-5 h-5"></i>
+            </div>
+            <div>
+                <h1 class="text-base font-bold tracking-tight text-white flex items-center gap-1.5">
+                    DriveCam <span class="text-xs px-1.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold border border-indigo-500/30">PRO</span>
+                </h1>
+                <p id="targetFolderBadge" class="text-[11px] text-slate-400 truncate max-w-[150px] sm:max-w-[200px]">
+                    📁 <span id="folderBadgeText">DriveCam Uploads</span>
+                </p>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+            <!-- Auth Status Button -->
+            <button id="authBtn" onclick="handleAuthClick()" class="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border transition-all duration-200 bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700">
+                <i data-lucide="log-in" class="w-3.5 h-3.5"></i>
+                <span id="authBtnText">Hubungkan</span>
+            </button>
+
+            <!-- Settings Button -->
+            <button onclick="openModal('settingsModal')" class="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700 transition">
+                <i data-lucide="settings" class="w-4 h-4"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- Viewfinder Area -->
+    <main class="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
+        <!-- Live Video element -->
+        <video id="videoElement" autoplay playsinline class="w-full h-full object-cover transition-all"></video>
+
+        <!-- Hidden canvas for photo capture & processing -->
+        <canvas id="captureCanvas" class="hidden"></canvas>
+
+        <!-- Camera Grid Overlay -->
+        <div id="cameraGrid" class="absolute inset-0 grid grid-cols-3 grid-rows-3 pointer-events-none opacity-20 hidden">
+            <div class="border-r border-b border-white/60"></div>
+            <div class="border-r border-b border-white/60"></div>
+            <div class="border-b border-white/60"></div>
+            <div class="border-r border-b border-white/60"></div>
+            <div class="border-r border-b border-white/60"></div>
+            <div class="border-b border-white/60"></div>
+            <div class="border-r border-white/60"></div>
+            <div class="border-r border-white/60"></div>
+            <div></div>
+        </div>
+
+        <!-- Flash Overlay (Triggered on photo capture) -->
+        <div id="flashEffect" class="absolute inset-0 bg-white pointer-events-none opacity-0 z-30"></div>
+
+        <!-- Camera Controls Overlay (Top Right of Viewfinder) -->
+        <div class="absolute top-4 right-4 flex flex-col gap-2 z-10">
+            <!-- Grid Toggle -->
+            <button onclick="toggleGrid()" class="p-2.5 rounded-full bg-slate-900/60 backdrop-blur-md border border-white/10 text-white hover:bg-slate-800/80 transition">
+                <i data-lucide="grid" class="w-4 h-4"></i>
+            </button>
+            <!-- Camera Switch Toggle -->
+            <button onclick="switchCamera()" class="p-2.5 rounded-full bg-slate-900/60 backdrop-blur-md border border-white/10 text-white hover:bg-slate-800/80 transition">
+                <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+            </button>
+        </div>
+
+        <!-- Mode Indicator Overlay (Top Left) -->
+        <div class="absolute top-4 left-4 z-10 flex items-center gap-2">
+            <button id="autoUploadToggleBtn" onclick="toggleAutoUpload()" class="px-3 py-1.5 rounded-full text-xs font-semibold backdrop-blur-md transition-all flex items-center gap-1.5 border bg-emerald-500/20 text-emerald-300 border-emerald-500/40">
+                <i data-lucide="zap" class="w-3.5 h-3.5"></i>
+                <span id="autoUploadText">Auto-Upload: ON</span>
+            </button>
+        </div>
+
+        <!-- Camera Permission / Offline Placeholder -->
+        <div id="cameraPlaceholder" class="absolute inset-0 bg-slate-950 flex flex-col items-center justify-center p-6 text-center z-10 hidden">
+            <div class="w-16 h-16 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 mb-4">
+                <i data-lucide="camera-off" class="w-8 h-8"></i>
+            </div>
+            <h3 class="text-base font-bold text-white mb-1">Kamera Tidak Aktif</h3>
+            <p class="text-xs text-slate-400 max-w-xs mb-4">Izinkan akses kamera di browser kamu atau pilih file dari galeri.</p>
+            <button onclick="startCamera()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition">
+                Coba Lagi
+            </button>
+        </div>
+    </main>
+
+    <!-- Bottom Navigation & Controls Bar -->
+    <footer class="z-20 px-6 py-5 bg-slate-900/90 backdrop-blur-lg border-t border-slate-800 flex items-center justify-around">
+        <!-- Gallery / Recent Files Drawer Trigger -->
+        <button onclick="openModal('galleryModal')" class="relative p-3 rounded-2xl bg-slate-800/80 border border-slate-700/80 text-slate-300 hover:text-white transition">
+            <i data-lucide="image" class="w-5 h-5"></i>
+            <span id="recentBadge" class="hidden absolute -top-1 -right-1 w-4 h-4 rounded-full bg-indigo-600 text-white text-[10px] font-bold flex items-center justify-center">0</span>
+        </button>
+
+        <!-- Main Shutter Button -->
+        <button onclick="capturePhoto()" class="relative group p-1.5 rounded-full border-2 border-white/80 transition-transform active:scale-95 shutter-btn-glow">
+            <div class="w-16 h-16 rounded-full bg-gradient-to-tr from-indigo-600 to-indigo-400 flex items-center justify-center shadow-lg group-hover:scale-105 transition-all">
+                <i data-lucide="aperture" class="w-8 h-8 text-white"></i>
+            </div>
+        </button>
+
+        <!-- Native Input Fallback Button -->
+        <label class="p-3 rounded-2xl bg-slate-800/80 border border-slate-700/80 text-slate-300 hover:text-white transition cursor-pointer">
+            <i data-lucide="upload" class="w-5 h-5"></i>
+            <input type="file" id="fallbackFileInput" accept="image/*" capture="environment" class="hidden" onchange="handleFallbackUpload(event)">
+        </label>
+    </footer>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center hidden">
+        <div class="bg-slate-900 border border-slate-800 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-6 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+                <h3 class="text-base font-bold text-white flex items-center gap-2">
+                    <i data-lucide="sliders" class="w-4 h-4 text-indigo-400"></i> Setelan Aplikasi
+                </h3>
+                <button onclick="closeModal('settingsModal')" class="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <!-- Google OAuth Settings -->
+            <div class="space-y-3">
+                <label class="block text-xs font-semibold text-slate-300">
+                    Google OAuth Client ID
+                    <span class="text-slate-500 font-normal block text-[11px] mt-0.5">Dapatkan dari Google Cloud Console.</span>
+                </label>
+                <input type="text" id="clientIdInput" placeholder="xxxxxx-xxxxxx.apps.googleusercontent.com" class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500">
+            </div>
+
+            <!-- Target Folder Name -->
+            <div class="space-y-3">
+                <label class="block text-xs font-semibold text-slate-300">
+                    Nama Folder di Google Drive
+                </label>
+                <input type="text" id="folderNameInput" placeholder="DriveCam Uploads" value="DriveCam Uploads" class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500">
+            </div>
+
+            <!-- Image Quality & Resize Controls -->
+            <div class="space-y-3">
+                <div class="flex justify-between items-center">
+                    <label class="text-xs font-semibold text-slate-300">Kualitas Kompresi Foto</label>
+                    <span id="qualityVal" class="text-xs font-bold text-indigo-400">80%</span>
+                </div>
+                <input type="range" id="qualitySlider" min="30" max="100" value="80" class="w-full accent-indigo-500" oninput="document.getElementById('qualityVal').innerText = this.value + '%'">
+            </div>
+
+            <div class="space-y-3">
+                <label class="block text-xs font-semibold text-slate-300">Maksimal Resolusi Foto</label>
+                <select id="maxResolutionSelect" class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500">
+                    <option value="1280">1280px (Cepat & Hemat Kuota)</option>
+                    <option value="1920" selected>1920px (Full HD - Direkomendasikan)</option>
+                    <option value="2560">2560px (Ultra HD)</option>
+                    <option value="0">Ukuran Asli (Tanpa Resize)</option>
+                </select>
+            </div>
+
+            <!-- How-to Guide Accordion -->
+            <details class="bg-slate-950 rounded-xl p-3 border border-slate-800 text-xs text-slate-400">
+                <summary class="font-semibold text-slate-300 cursor-pointer flex items-center justify-between">
+                    <span>Cara Mendapatkan Client ID Google?</span>
+                    <i data-lucide="chevron-down" class="w-4 h-4"></i>
+                </summary>
+                <ol class="list-decimal list-inside space-y-1.5 mt-2.5 pl-1 text-[11px] leading-relaxed">
+                    <li>Buka <a href="https://console.cloud.google.com/" target="_blank" class="text-indigo-400 underline">Google Cloud Console</a>.</li>
+                    <li>Buat Project baru & aktifkan **Google Drive API**.</li>
+                    <li>Di menu **Credentials**, buat **OAuth 2.0 Client ID** (Web application).</li>
+                    <li>Tambahkan domain website kamu di **Authorized JavaScript origins**.</li>
+                    <li>Salin Client ID dan tempelkan pada kolom di atas.</li>
+                </ol>
+            </details>
+
+            <!-- Save Settings Button -->
+            <button onclick="saveSettings()" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl shadow-lg transition">
+                Simpan Setelan
+            </button>
+        </div>
+    </div>
+
+    <!-- Photo Preview Modal (Appears when Auto-Upload is OFF) -->
+    <div id="previewModal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-3xl p-5 shadow-2xl space-y-4">
+            <h3 class="text-sm font-bold text-white flex items-center justify-between">
+                <span>Pratinjau Foto</span>
+                <span id="fileSizeBadge" class="text-[11px] font-normal px-2 py-0.5 rounded-md bg-slate-800 text-slate-400">0 KB</span>
+            </h3>
+
+            <!-- Preview Image Display -->
+            <div class="relative aspect-[3/4] w-full rounded-2xl overflow-hidden bg-black border border-slate-800">
+                <img id="previewImage" class="w-full h-full object-contain">
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="grid grid-cols-2 gap-3 pt-1">
+                <button onclick="closeModal('previewModal')" class="py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl transition">
+                    Ulangi Foto
+                </button>
+                <button onclick="confirmManualUpload()" class="py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5">
+                    <i data-lucide="cloud-upload" class="w-4 h-4"></i> Upload Sekarang
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upload History & Gallery Modal -->
+    <div id="galleryModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center hidden">
+        <div class="bg-slate-900 border border-slate-800 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-6 shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+                <h3 class="text-base font-bold text-white flex items-center gap-2">
+                    <i data-lucide="folder-check" class="w-4 h-4 text-emerald-400"></i> Riwayat Upload Drive
+                </h3>
+                <button onclick="closeModal('galleryModal')" class="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <!-- Upload List Container -->
+            <div id="uploadHistoryList" class="flex-1 overflow-y-auto space-y-2.5 pr-1 min-h-[250px]">
+                <!-- Dynamic uploaded items will be injected here -->
+                <div id="emptyHistoryMsg" class="h-full flex flex-col items-center justify-center text-center p-8 text-slate-500">
+                    <i data-lucide="cloud-off" class="w-10 h-10 mb-2 opacity-50"></i>
+                    <p class="text-xs">Belum ada foto yang diunggah.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upload Progress Floating Banner -->
+    <div id="uploadProgressBar" class="fixed bottom-24 left-4 right-4 max-w-sm mx-auto bg-slate-900 border border-slate-700/80 p-3.5 rounded-2xl shadow-2xl z-40 hidden space-y-2">
+        <div class="flex items-center justify-between text-xs">
+            <span class="font-semibold text-slate-200 flex items-center gap-2">
+                <i data-lucide="loader-2" class="w-4 h-4 text-indigo-400 animate-spin"></i> Mengunggah ke Google Drive...
+            </span>
+            <span id="progressPercent" class="font-bold text-indigo-400">0%</span>
+        </div>
+        <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+            <div id="progressFill" class="h-full bg-indigo-500 transition-all duration-150 w-0"></div>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toastContainer" class="fixed top-16 left-4 right-4 max-w-sm mx-auto z-50 pointer-events-none space-y-2"></div>
+
+    <script>
+        // Global Application State
+        const state = {
+            clientId: localStorage.getItem('dc_client_id') || '',
+            folderName: localStorage.getItem('dc_folder_name') || 'DriveCam Uploads',
+            quality: parseFloat(localStorage.getItem('dc_quality') || '0.8'),
+            maxRes: parseInt(localStorage.getItem('dc_max_res') || '1920'),
+            autoUpload: localStorage.getItem('dc_auto_upload') !== 'false',
+            
+            accessToken: null,
+            targetFolderId: null,
+            tokenClient: null,
+            
+            stream: null,
+            facingMode: 'environment', // 'environment' or 'user'
+            gridVisible: false,
+            
+            pendingBlob: null,
+            uploadHistory: JSON.parse(localStorage.getItem('dc_upload_history') || '[]')
+        };
+
+        // DOM Element Cache
+        const elements = {
+            video: document.getElementById('videoElement'),
+            canvas: document.getElementById('captureCanvas'),
+            placeholder: document.getElementById('cameraPlaceholder'),
+            grid: document.getElementById('cameraGrid'),
+            flash: document.getElementById('flashEffect'),
+            authBtn: document.getElementById('authBtn'),
+            authBtnText: document.getElementById('authBtnText'),
+            autoUploadBtn: document.getElementById('autoUploadToggleBtn'),
+            autoUploadText: document.getElementById('autoUploadText'),
+            folderBadgeText: document.getElementById('folderBadgeText'),
+            clientIdInput: document.getElementById('clientIdInput'),
+            folderNameInput: document.getElementById('folderNameInput'),
+            qualitySlider: document.getElementById('qualitySlider'),
+            maxResSelect: document.getElementById('maxResolutionSelect'),
+            previewImage: document.getElementById('previewImage'),
+            fileSizeBadge: document.getElementById('fileSizeBadge'),
+            progressBanner: document.getElementById('uploadProgressBar'),
+            progressFill: document.getElementById('progressFill'),
+            progressPercent: document.getElementById('progressPercent'),
+            historyList: document.getElementById('uploadHistoryList'),
+            emptyHistoryMsg: document.getElementById('emptyHistoryMsg'),
+            recentBadge: document.getElementById('recentBadge')
+        };
+
+        // Initialize App on Page Load
+        window.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+            loadSavedSettingsUI();
+            startCamera();
+            initGoogleIdentity();
+            renderUploadHistory();
+        });
+
+        // Initialize Camera Viewfinder
+        async function startCamera() {
+            if (state.stream) {
+                state.stream.getTracks().forEach(track => track.stop());
+            }
+
+            elements.placeholder.classList.add('hidden');
+            elements.video.classList.remove('hidden');
+
+            try {
+                const constraints = {
+                    video: {
+                        facingMode: { ideal: state.facingMode },
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
+                    },
+                    audio: false
+                };
+
+                state.stream = await navigator.mediaDevices.getUserMedia(constraints);
+                elements.video.srcObject = state.stream;
+
+                if (state.facingMode === 'user') {
+                    elements.video.classList.add('mirror');
+                } else {
+                    elements.video.classList.remove('mirror');
+                }
+            } catch (err) {
+                console.error("Camera access error:", err);
+                elements.video.classList.add('hidden');
+                elements.placeholder.classList.remove('hidden');
+                showToast("Tidak dapat mengakses kamera device.", "error");
+            }
+        }
+
+        // Toggle Facing Mode (Front / Rear)
+        function switchCamera() {
+            state.facingMode = state.facingMode === 'environment' ? 'user' : 'environment';
+            startCamera();
+        }
+
+        // Toggle Rule of Thirds Grid
+        function toggleGrid() {
+            state.gridVisible = !state.gridVisible;
+            if (state.gridVisible) {
+                elements.grid.classList.remove('hidden');
+            } else {
+                elements.grid.classList.add('hidden');
+            }
+        }
+
+        // Initialize Google GIS Token Client
+        function initGoogleIdentity() {
+            if (!state.clientId) return;
+
+            try {
+                state.tokenClient = google.accounts.oauth2.initTokenClient({
+                    client_id: state.clientId,
+                    scope: 'https://www.googleapis.com/auth/drive.file',
+                    callback: (response) => {
+                        if (response.error !== undefined) {
+                            showToast("Gagal Otentikasi: " + response.error, "error");
+                            return;
+                        }
+                        state.accessToken = response.access_token;
+                        updateAuthStatusUI(true);
+                        showToast("Terhubung ke Google Drive!", "success");
+                        ensureDriveFolder();
+                    },
+                });
+            } catch (err) {
+                console.error("GIS init error:", err);
+            }
+        }
+
+        // Handle Connect / Disconnect Button Click
+        function handleAuthClick() {
+            if (!state.clientId) {
+                showToast("Harap masukkan Google Client ID di Setelan terlebih dahulu.", "info");
+                openModal('settingsModal');
+                return;
+            }
+
+            if (state.accessToken) {
+                // Logout / Reset Token
+                state.accessToken = null;
+                state.targetFolderId = null;
+                updateAuthStatusUI(false);
+                showToast("Koneksi Google Drive terputus.", "info");
+            } else {
+                // Trigger OAuth Popup Flow
+                if (state.tokenClient) {
+                    state.tokenClient.requestAccessToken({ prompt: 'consent' });
+                } else {
+                    initGoogleIdentity();
+                    if (state.tokenClient) state.tokenClient.requestAccessToken({ prompt: 'consent' });
+                }
+            }
+        }
+
+        function updateAuthStatusUI(isConnected) {
+            if (isConnected) {
+                elements.authBtnText.innerText = "Terhubung";
+                elements.authBtn.className = "flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border transition-all duration-200 bg-emerald-500/20 border-emerald-500/40 text-emerald-300";
+            } else {
+                elements.authBtnText.innerText = "Hubungkan";
+                elements.authBtn.className = "flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border transition-all duration-200 bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700";
+            }
+        }
+
+        // Ensure Target Upload Folder Exists in Drive
+        async function ensureDriveFolder() {
+            if (!state.accessToken) return;
+
+            try {
+                // Search if folder exists
+                const q = encodeURIComponent(`mimeType='application/vnd.google-apps.folder' and name='${state.folderName}' and trashed=false`);
+                const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}`, {
+                    headers: { 'Authorization': `Bearer ${state.accessToken}` }
+                });
+
+                if (!res.ok) throw new Error("Gagal memeriksa folder di Drive");
+                const data = await res.json();
+
+                if (data.files && data.files.length > 0) {
+                    state.targetFolderId = data.files[0].id;
+                } else {
+                    // Create new folder
+                    const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${state.accessToken}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            name: state.folderName,
+                            mimeType: 'application/vnd.google-apps.folder'
+                        })
+                    });
+                    const newFolder = await createRes.json();
+                    state.targetFolderId = newFolder.id;
+                }
+            } catch (err) {
+                console.error("Folder check error:", err);
+            }
+        }
+
+        // Synthesize Shutter Audio Effect using Web Audio API
+        function playShutterSound() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(800, ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + 0.08);
+                gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.01, ctx.currentTime + 0.08);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.08);
+            } catch(e) {}
+        }
+
+        // Capture Photo from Live Video Feed
+        async function capturePhoto() {
+            if (!state.stream || elements.video.paused) {
+                showToast("Kamera belum siap.", "error");
+                return;
+            }
+
+            playShutterSound();
+
+            // Trigger visual flash overlay
+            elements.flash.classList.remove('flash-overlay');
+            void elements.flash.offsetWidth; // trigger reflow
+            elements.flash.classList.add('flash-overlay');
+
+            // Draw video frame onto canvas
+            let width = elements.video.videoWidth;
+            let height = elements.video.videoHeight;
+
+            if (state.maxRes > 0 && Math.max(width, height) > state.maxRes) {
+                if (width > height) {
+                    height = Math.round((height * state.maxRes) / width);
+                    width = state.maxRes;
+                } else {
+                    width = Math.round((width * state.maxRes) / height);
+                    height = state.maxRes;
+                }
+            }
+
+            elements.canvas.width = width;
+            elements.canvas.height = height;
+            const ctx = elements.canvas.getContext('2d');
+
+            // Mirror if using front camera
+            if (state.facingMode === 'user') {
+                ctx.translate(width, 0);
+                ctx.scale(-1, 1);
+            }
+
+            ctx.drawImage(elements.video, 0, 0, width, height);
+
+            // Convert canvas to Blob JPEG
+            elements.canvas.toBlob((blob) => {
+                if (!blob) return;
+                state.pendingBlob = blob;
+
+                if (state.autoUpload) {
+                    processUpload(blob);
+                } else {
+                    // Show Preview Modal
+                    const url = URL.createObjectURL(blob);
+                    elements.previewImage.src = url;
+                    elements.fileSizeBadge.innerText = (blob.size / 1024).toFixed(1) + " KB";
+                    openModal('previewModal');
+                }
+            }, 'image/jpeg', state.quality);
+        }
+
+        // Handle Manual Fallback Input Upload
+        function handleFallbackUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            showToast("Memproses file gambar...", "info");
+            const img = new Image();
+            img.onload = () => {
+                let width = img.width;
+                let height = img.height;
+
+                if (state.maxRes > 0 && Math.max(width, height) > state.maxRes) {
+                    if (width > height) {
+                        height = Math.round((height * state.maxRes) / width);
+                        width = state.maxRes;
+                    } else {
+                        width = Math.round((width * state.maxRes) / height);
+                        height = state.maxRes;
+                    }
+                }
+
+                elements.canvas.width = width;
+                elements.canvas.height = height;
+                const ctx = elements.canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+
+                elements.canvas.toBlob((compressedBlob) => {
+                    if (state.autoUpload) {
+                        processUpload(compressedBlob);
+                    } else {
+                        state.pendingBlob = compressedBlob;
+                        elements.previewImage.src = URL.createObjectURL(compressedBlob);
+                        elements.fileSizeBadge.innerText = (compressedBlob.size / 1024).toFixed(1) + " KB";
+                        openModal('previewModal');
+                    }
+                }, 'image/jpeg', state.quality);
+            };
+            img.src = URL.createObjectURL(file);
+        }
+
+        function confirmManualUpload() {
+            closeModal('previewModal');
+            if (state.pendingBlob) {
+                processUpload(state.pendingBlob);
+            }
+        }
+
+        // Upload Blob to Google Drive using Multipart Form Data
+        async function processUpload(blob) {
+            if (!state.accessToken) {
+                showToast("Koneksikan akun Google Drive di bagian atas terlebih dahulu!", "warning");
+                handleAuthClick();
+                return;
+            }
+
+            if (!state.targetFolderId) {
+                await ensureDriveFolder();
+            }
+
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const fileName = `SNAP_${timestamp}.jpg`;
+
+            // UI Progress Display
+            elements.progressBanner.classList.remove('hidden');
+            elements.progressFill.style.width = '0%';
+            elements.progressPercent.innerText = '0%';
+
+            const metadata = {
+                name: fileName,
+                mimeType: 'image/jpeg',
+                parents: state.targetFolderId ? [state.targetFolderId] : []
+            };
+
+            const formData = new FormData();
+            formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+            formData.append('file', blob);
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,thumbnailLink');
+            xhr.setRequestHeader('Authorization', `Bearer ${state.accessToken}`);
+
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    elements.progressFill.style.width = percent + '%';
+                    elements.progressPercent.innerText = percent + '%';
+                }
+            };
+
+            xhr.onload = () => {
+                elements.progressBanner.classList.add('hidden');
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    const result = JSON.parse(xhr.responseText);
+                    showToast("Berhasil diunggah ke Google Drive! 🚀", "success");
+                    
+                    // Add to Upload History
+                    const historyItem = {
+                        id: result.id,
+                        name: result.name,
+                        link: result.webViewLink,
+                        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                        size: (blob.size / 1024).toFixed(0) + " KB"
+                    };
+
+                    state.uploadHistory.unshift(historyItem);
+                    if (state.uploadHistory.length > 20) state.uploadHistory.pop();
+                    localStorage.setItem('dc_upload_history', JSON.stringify(state.uploadHistory));
+                    renderUploadHistory();
+                } else {
+                    console.error("Upload error response:", xhr.responseText);
+                    showToast("Gagal mengunggah foto ke Google Drive.", "error");
+                }
+            };
+
+            xhr.onerror = () => {
+                elements.progressBanner.classList.add('hidden');
+                showToast("Kesalahan jaringan saat mengunggah.", "error");
+            };
+
+            xhr.send(formData);
+        }
+
+        // Render Upload History Drawer Items
+        function renderUploadHistory() {
+            const history = state.uploadHistory;
+            if (history.length > 0) {
+                elements.emptyHistoryMsg.classList.add('hidden');
+                elements.recentBadge.classList.remove('hidden');
+                elements.recentBadge.innerText = history.length;
+            } else {
+                elements.emptyHistoryMsg.classList.remove('hidden');
+                elements.recentBadge.classList.add('hidden');
+                return;
+            }
+
+            elements.historyList.innerHTML = history.map(item => `
+                <div class="flex items-center justify-between p-3 rounded-2xl bg-slate-950 border border-slate-800 text-xs">
+                    <div class="flex items-center gap-3 overflow-hidden">
+                        <div class="p-2 rounded-xl bg-indigo-500/10 text-indigo-400">
+                            <i data-lucide="image" class="w-4 h-4"></i>
+                        </div>
+                        <div class="truncate">
+                            <p class="font-semibold text-slate-200 truncate">${item.name}</p>
+                            <p class="text-[10px] text-slate-500">${item.time} • ${item.size}</p>
+                        </div>
+                    </div>
+                    <a href="${item.link}" target="_blank" class="px-3 py-1.5 rounded-xl bg-indigo-600/20 text-indigo-300 font-semibold border border-indigo-500/30 hover:bg-indigo-600 hover:text-white transition flex items-center gap-1 shrink-0">
+                        Buka <i data-lucide="external-link" class="w-3 h-3"></i>
+                    </a>
+                </div>
+            `).join('');
+
+            lucide.createIcons();
+        }
+
+        // Auto-Upload Toggle Handler
+        function toggleAutoUpload() {
+            state.autoUpload = !state.autoUpload;
+            localStorage.setItem('dc_auto_upload', state.autoUpload);
+            updateAutoUploadUI();
+        }
+
+        function updateAutoUploadUI() {
+            if (state.autoUpload) {
+                elements.autoUploadText.innerText = "Auto-Upload: ON";
+                elements.autoUploadBtn.className = "px-3 py-1.5 rounded-full text-xs font-semibold backdrop-blur-md transition-all flex items-center gap-1.5 border bg-emerald-500/20 text-emerald-300 border-emerald-500/40";
+            } else {
+                elements.autoUploadText.innerText = "Auto-Upload: OFF";
+                elements.autoUploadBtn.className = "px-3 py-1.5 rounded-full text-xs font-semibold backdrop-blur-md transition-all flex items-center gap-1.5 border bg-amber-500/20 text-amber-300 border-amber-500/40";
+            }
+        }
+
+        // Save Modal Settings
+        function saveSettings() {
+            const newClientId = elements.clientIdInput.value.trim();
+            const newFolderName = elements.folderNameInput.value.trim() || 'DriveCam Uploads';
+            const newQuality = parseFloat(elements.qualitySlider.value) / 100;
+            const newMaxRes = parseInt(elements.maxResSelect.value);
+
+            state.clientId = newClientId;
+            state.folderName = newFolderName;
+            state.quality = newQuality;
+            state.maxRes = newMaxRes;
+
+            localStorage.setItem('dc_client_id', newClientId);
+            localStorage.setItem('dc_folder_name', newFolderName);
+            localStorage.setItem('dc_quality', newQuality);
+            localStorage.setItem('dc_max_res', newMaxRes);
+
+            elements.folderBadgeText.innerText = newFolderName;
+
+            initGoogleIdentity();
+            closeModal('settingsModal');
+            showToast("Setelan berhasil disimpan!", "success");
+        }
+
+        function loadSavedSettingsUI() {
+            elements.clientIdInput.value = state.clientId;
+            elements.folderNameInput.value = state.folderName;
+            elements.folderBadgeText.innerText = state.folderName;
+            elements.qualitySlider.value = Math.round(state.quality * 100);
+            document.getElementById('qualityVal').innerText = Math.round(state.quality * 100) + '%';
+            elements.maxResSelect.value = state.maxRes;
+            updateAutoUploadUI();
+        }
+
+        // Modal Helpers
+        function openModal(id) {
+            document.getElementById(id).classList.remove('hidden');
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).classList.add('hidden');
+        }
+
+        // Toast Notification Helper
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+
+            let bgBorder = 'bg-slate-900/90 border-slate-700 text-slate-200';
+            if (type === 'success') bgBorder = 'bg-emerald-950/90 border-emerald-600/50 text-emerald-200';
+            if (type === 'error') bgBorder = 'bg-rose-950/90 border-rose-600/50 text-rose-200';
+            if (type === 'warning') bgBorder = 'bg-amber-950/90 border-amber-600/50 text-amber-200';
+
+            toast.className = `p-3.5 rounded-2xl border backdrop-blur-lg shadow-xl text-xs font-semibold flex items-center justify-between transition-all transform duration-300 translate-y-[-10px] opacity-0 ${bgBorder}`;
+            toast.innerText = message;
+
+            container.appendChild(toast);
+
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-y-[-10px]', 'opacity-0');
+            });
+
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-[-10px]');
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+    </script>
+</body>
+</html>
