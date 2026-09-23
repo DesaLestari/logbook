@@ -1,16 +1,8 @@
-```md
-```md
-```md
-```md
-```md
-```md
-```md
-```md
 <!DOCTYPE html>
 <html lang="id" class="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>DriveCam Snap - Auto Upload to Google Drive</title>
 
     <!-- Tailwind CSS CDN -->
@@ -34,10 +26,10 @@
     </script>
 
     <!-- Google Identity Services (OAuth 2.0) -->
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://accounts.google.com/gsi/client" async defer onload="window.__gisReady = true; if (window.__gisInitFn) window.__gisInitFn();"></script>
 
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Lucide Icons (versi terkunci, bukan @latest, biar tidak tiba-tiba berubah/rusak) -->
+    <script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.js"></script>
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
@@ -181,7 +173,7 @@
         </button>
 
         <!-- Main Shutter Button -->
-        <button onclick="capturePhoto()" class="relative group p-1.5 rounded-full border-2 border-white/80 transition-transform active:scale-95 shutter-btn-glow">
+        <button id="shutterBtn" onclick="capturePhoto()" class="relative group p-1.5 rounded-full border-2 border-white/80 transition-transform active:scale-95 shutter-btn-glow">
             <div class="w-16 h-16 rounded-full bg-gradient-to-tr from-indigo-600 to-indigo-400 flex items-center justify-center shadow-lg group-hover:scale-105 transition-all">
                 <i data-lucide="aperture" class="w-8 h-8 text-white"></i>
             </div>
@@ -373,7 +365,8 @@
             progressPercent: document.getElementById('progressPercent'),
             historyList: document.getElementById('uploadHistoryList'),
             emptyHistoryMsg: document.getElementById('emptyHistoryMsg'),
-            recentBadge: document.getElementById('recentBadge')
+            recentBadge: document.getElementById('recentBadge'),
+            shutterBtn: document.getElementById('shutterBtn')
         };
 
         // Initialize App on Page Load
@@ -385,6 +378,14 @@
             renderUploadHistory();
         });
 
+        // Lepaskan kamera saat tab ditutup/ditinggalkan supaya lampu indikator
+        // kamera device mati dan tidak terus memakai baterai/resource.
+        window.addEventListener('beforeunload', () => {
+            if (state.stream) {
+                state.stream.getTracks().forEach(track => track.stop());
+            }
+        });
+
         // Initialize Camera Viewfinder
         async function startCamera() {
             if (state.stream) {
@@ -393,6 +394,13 @@
 
             elements.placeholder.classList.add('hidden');
             elements.video.classList.remove('hidden');
+
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                elements.video.classList.add('hidden');
+                elements.placeholder.classList.remove('hidden');
+                showToast("Browser ini tidak mendukung akses kamera (butuh HTTPS).", "error");
+                return;
+            }
 
             try {
                 const constraints = {
@@ -404,7 +412,16 @@
                     audio: false
                 };
 
-                state.stream = await navigator.mediaDevices.getUserMedia(constraints);
+                try {
+                    state.stream = await navigator.mediaDevices.getUserMedia(constraints);
+                } catch (innerErr) {
+                    // Banyak laptop/webcam desktop tidak punya kamera "environment",
+                    // jadi constraint facingMode bisa gagal total. Coba lagi tanpa
+                    // facingMode sebelum benar-benar menyerah.
+                    console.warn("Retry kamera tanpa facingMode:", innerErr);
+                    state.stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                }
+
                 elements.video.srcObject = state.stream;
 
                 if (state.facingMode === 'user') {
@@ -437,8 +454,17 @@
         }
 
         // Initialize Google GIS Token Client
+        // Skrip GIS dimuat dengan async/defer, jadi bisa saja belum siap saat
+        // DOMContentLoaded terpanggil. Kalau belum siap, kita daftarkan diri
+        // untuk dipanggil ulang otomatis begitu skrip selesai load (lihat
+        // onload di tag <script> GIS di <head>).
         function initGoogleIdentity() {
             if (!state.clientId) return;
+
+            if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
+                window.__gisInitFn = initGoogleIdentity;
+                return;
+            }
 
             try {
                 state.tokenClient = google.accounts.oauth2.initTokenClient({
@@ -450,6 +476,10 @@
                             return;
                         }
                         state.accessToken = response.access_token;
+                        // Token akses Google berlaku sekitar 1 jam. Simpan waktu
+                        // kedaluwarsanya supaya kita bisa minta token baru secara
+                        // otomatis sebelum upload gagal karena token basi.
+                        state.tokenExpiresAt = Date.now() + ((response.expires_in || 3600) * 1000);
                         updateAuthStatusUI(true);
                         showToast("Terhubung ke Google Drive!", "success");
                     },
@@ -457,6 +487,33 @@
             } catch (err) {
                 console.error("GIS init error:", err);
             }
+        }
+
+        // Pastikan kita punya access token yang belum kedaluwarsa sebelum upload.
+        // Kalau sudah lewat waktu (atau hampir), minta token baru secara diam-diam
+        // (tanpa munculkan popup consent lagi, karena user sudah pernah setuju).
+        function ensureFreshToken() {
+            return new Promise((resolve, reject) => {
+                const soon = Date.now() > (state.tokenExpiresAt || 0) - 60000; // 60 detik buffer
+                if (state.accessToken && !soon) {
+                    resolve();
+                    return;
+                }
+                if (!state.tokenClient) {
+                    reject(new Error('Google belum terhubung.'));
+                    return;
+                }
+                const prevCallback = state.tokenClient.callback;
+                state.tokenClient.callback = (response) => {
+                    if (prevCallback) prevCallback(response);
+                    if (response.error !== undefined) {
+                        reject(new Error(response.error));
+                    } else {
+                        resolve();
+                    }
+                };
+                state.tokenClient.requestAccessToken({ prompt: '' });
+            });
         }
 
         // Handle Connect / Disconnect Button Click
@@ -560,8 +617,8 @@
                     processUpload(blob);
                 } else {
                     // Show Preview Modal
-                    const url = URL.createObjectURL(blob);
-                    elements.previewImage.src = url;
+                    if (elements.previewImage.src) URL.revokeObjectURL(elements.previewImage.src);
+                    elements.previewImage.src = URL.createObjectURL(blob);
                     elements.fileSizeBadge.innerText = (blob.size / 1024).toFixed(1) + " KB";
                     openModal('previewModal');
                 }
@@ -599,6 +656,7 @@
                         processUpload(compressedBlob);
                     } else {
                         state.pendingBlob = compressedBlob;
+                        if (elements.previewImage.src) URL.revokeObjectURL(elements.previewImage.src);
                         elements.previewImage.src = URL.createObjectURL(compressedBlob);
                         elements.fileSizeBadge.innerText = (compressedBlob.size / 1024).toFixed(1) + " KB";
                         openModal('previewModal');
@@ -617,7 +675,22 @@
 
         // Upload Blob to Google Drive using Multipart Form Data
         async function processUpload(blob) {
-            if (!state.accessToken) {
+            if (!state.clientId) {
+                showToast("Harap masukkan Google Client ID di Setelan terlebih dahulu.", "warning");
+                openModal('settingsModal');
+                return;
+            }
+
+            // Cegah tap ganda memicu upload dobel saat proses masih berjalan
+            if (state.isUploading) return;
+            state.isUploading = true;
+            elements.shutterBtn && elements.shutterBtn.classList.add('opacity-50', 'pointer-events-none');
+
+            try {
+                await ensureFreshToken();
+            } catch (err) {
+                state.isUploading = false;
+                elements.shutterBtn && elements.shutterBtn.classList.remove('opacity-50', 'pointer-events-none');
                 showToast("Koneksikan akun Google Drive terlebih dahulu!", "warning");
                 handleAuthClick();
                 return;
@@ -657,6 +730,9 @@
 
             xhr.onload = () => {
                 elements.progressBanner.classList.add('hidden');
+                state.isUploading = false;
+                elements.shutterBtn && elements.shutterBtn.classList.remove('opacity-50', 'pointer-events-none');
+
                 if (xhr.status >= 200 && xhr.status < 300) {
                     const result = JSON.parse(xhr.responseText);
                     showToast("Berhasil diunggah ke Google Drive! 🚀", "success");
@@ -674,6 +750,11 @@
                     if (state.uploadHistory.length > 20) state.uploadHistory.pop();
                     localStorage.setItem('dc_upload_history', JSON.stringify(state.uploadHistory));
                     renderUploadHistory();
+                } else if (xhr.status === 401) {
+                    console.error("Upload error response:", xhr.responseText);
+                    state.accessToken = null;
+                    updateAuthStatusUI(false);
+                    showToast("Sesi Google Drive berakhir, silakan hubungkan ulang.", "error");
                 } else {
                     console.error("Upload error response:", xhr.responseText);
                     showToast("Gagal mengunggah foto ke Google Drive.", "error");
@@ -682,6 +763,8 @@
 
             xhr.onerror = () => {
                 elements.progressBanner.classList.add('hidden');
+                state.isUploading = false;
+                elements.shutterBtn && elements.shutterBtn.classList.remove('opacity-50', 'pointer-events-none');
                 showToast("Kesalahan jaringan saat mengunggah.", "error");
             };
 
@@ -808,4 +891,4 @@
         }
     </script>
 </body>
-</html>````````````````````````
+</html>
